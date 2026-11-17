@@ -127,11 +127,10 @@ export const DownloadPage: React.FC = () => {
       const buildAAD = (index: number) => {
         const aadObj = {
           v: 1,
-          file_id: shareInfo.share_id ? shareInfo.share_id : sessionToken,
+          file_id: shareInfo.file_id,
           chunk_index: index,
           total_chunks: totalChunks,
         };
-        // For file_id in AAD, we match upload parameter
         return new TextEncoder().encode(JSON.stringify(aadObj));
       };
 
@@ -143,7 +142,11 @@ export const DownloadPage: React.FC = () => {
       let manifestPlaintext: ArrayBuffer;
       try {
         manifestPlaintext = await window.crypto.subtle.decrypt(
-          { name: 'AES-GCM', iv: buildIV(0) },
+          {
+            name: 'AES-GCM',
+            iv: buildIV(0),
+            additionalData: buildAAD(0),
+          },
           cryptoKey,
           manifestCiphertext
         );
@@ -168,7 +171,11 @@ export const DownloadPage: React.FC = () => {
         let chunkPlaintext: ArrayBuffer;
         try {
           chunkPlaintext = await window.crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv: buildIV(i) },
+            {
+              name: 'AES-GCM',
+              iv: buildIV(i),
+              additionalData: buildAAD(i),
+            },
             cryptoKey,
             chunkCiphertext
           );

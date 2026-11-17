@@ -38,6 +38,7 @@ export interface ShareItem {
 
 export interface PublicShareInfo {
   share_id: string;
+  file_id: string;
   chunk_count: number;
   iv_prefix: string;
   crypto_version: string;

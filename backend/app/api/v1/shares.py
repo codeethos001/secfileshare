@@ -81,6 +81,7 @@ def get_public_share(id: str, db: Session = Depends(get_db)):
         share, file = sharing_service.get_public_share(db=db, share_id=id)
         return PublicShareInfo(
             share_id=share.id,
+            file_id=file.id,
             chunk_count=file.chunk_count,
             iv_prefix=file.iv_prefix,
             crypto_version=file.crypto_version,

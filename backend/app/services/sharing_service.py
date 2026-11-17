@@ -1,18 +1,32 @@
-from datetime import datetime, timedelta, timezone
+
 from typing import Optional
+from datetime import datetime, timezone, timedelta
+
 from sqlalchemy.orm import Session
+
 from app.models.share import Share
 from app.models.file import EncryptedFile
 from app.models.file_chunk import FileChunk
 from app.models.key_envelope import KeyEnvelope
 from app.models.download_session import DownloadSession
+
 from app.core.security import generate_secure_token, hash_token
 from app.core.config import settings
 from app.services.storage_service import storage_service
 from app.services.audit_service import audit_service
 
 
+def ensure_utc(dt: datetime) -> datetime:
+    """Normalize database timestamps to timezone-aware UTC."""
+    if dt.tzinfo is None:
+        # Existing SQLite timestamps are assumed to represent UTC.
+        return dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(timezone.utc)
+
+
 class SharingService:
+
     @staticmethod
     def create_share(
         db: Session,
@@ -26,6 +40,7 @@ class SharingService:
         encrypted_key: Optional[str] = None,
         ip_address: Optional[str] = None
     ) -> Share:
+
         file = db.query(EncryptedFile).filter(
             EncryptedFile.id == file_id,
             EncryptedFile.owner_id == user_id,
@@ -35,7 +50,11 @@ class SharingService:
         if not file:
             raise ValueError("File not found or upload has not completed yet")
 
-        expiry = datetime.now(timezone.utc) + timedelta(hours=expiry_hours) if expiry_hours else None
+        expiry = (
+            datetime.now(timezone.utc) + timedelta(hours=expiry_hours)
+            if expiry_hours else None
+        )
+
         share_id = generate_secure_token(prefix="sh_")
 
         share = Share(
@@ -48,6 +67,7 @@ class SharingService:
             download_count=0,
             status="ACTIVE"
         )
+
         db.add(share)
 
         if share_type == "RECIPIENT" and recipient_id and encapsulated_key and encrypted_key:
@@ -75,24 +95,44 @@ class SharingService:
                 "expiry": expiry.isoformat() if expiry else None
             }
         )
+
         return share
 
     @staticmethod
     def list_user_shares(db: Session, user_id: str) -> list[Share]:
+
         now = datetime.now(timezone.utc)
-        shares = db.query(Share).filter(Share.owner_id == user_id).order_by(Share.created_at.desc()).all()
-        for s in shares:
-            if s.status == "ACTIVE":
-                if s.expiry and s.expiry <= now:
-                    s.status = "EXPIRED"
-                elif s.max_downloads and s.download_count >= s.max_downloads:
-                    s.status = "EXPIRED"
+
+        shares = db.query(Share).filter(
+            Share.owner_id == user_id
+        ).order_by(Share.created_at.desc()).all()
+
+        for share in shares:
+            if share.status == "ACTIVE":
+
+                if share.expiry and ensure_utc(share.expiry) <= now:
+                    share.status = "EXPIRED"
+
+                elif share.max_downloads and share.download_count >= share.max_downloads:
+                    share.status = "EXPIRED"
+
         db.commit()
+
         return shares
 
     @staticmethod
-    def revoke_share(db: Session, share_id: str, user_id: str, ip_address: Optional[str] = None) -> bool:
-        share = db.query(Share).filter(Share.id == share_id, Share.owner_id == user_id).first()
+    def revoke_share(
+        db: Session,
+        share_id: str,
+        user_id: str,
+        ip_address: Optional[str] = None
+    ) -> bool:
+
+        share = db.query(Share).filter(
+            Share.id == share_id,
+            Share.owner_id == user_id
+        ).first()
+
         if not share:
             return False
 
@@ -106,19 +146,31 @@ class SharingService:
             ip_address=ip_address,
             metadata={"share_id": share_id}
         )
+
         return True
 
     @staticmethod
-    def get_public_share(db: Session, share_id: str) -> tuple[Share, EncryptedFile]:
-        share = db.query(Share).filter(Share.id == share_id).first()
+    def get_public_share(
+        db: Session,
+        share_id: str
+    ) -> tuple[Share, EncryptedFile]:
+
+        share = db.query(Share).filter(
+            Share.id == share_id
+        ).first()
+
         if not share:
             raise ValueError("Share not found")
 
         now = datetime.now(timezone.utc)
+
         if share.status == "REVOKED":
             raise ValueError("This share link has been revoked by the owner")
 
-        if share.expiry and share.expiry <= now:
+        if share.status == "EXPIRED":
+            raise ValueError("This share link has expired")
+
+        if share.expiry and ensure_utc(share.expiry) <= now:
             share.status = "EXPIRED"
             db.commit()
             raise ValueError("This share link has expired")
@@ -139,23 +191,33 @@ class SharingService:
         return share, file
 
     @staticmethod
-    def start_download_session(db: Session, share_id: str, ip_address: Optional[str] = None) -> tuple[str, EncryptedFile, datetime]:
+    def start_download_session(
+        db: Session,
+        share_id: str,
+        ip_address: Optional[str] = None
+    ) -> tuple[str, EncryptedFile, datetime]:
+
         share, file = SharingService.get_public_share(db, share_id)
 
-        # Count session once when created
         share.download_count += 1
+
         if share.max_downloads and share.download_count >= share.max_downloads:
             share.status = "EXPIRED"
 
         raw_token = generate_secure_token(prefix="ds_tok_")
         t_hash = hash_token(raw_token)
-        expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.DOWNLOAD_SESSION_EXPIRE_MINUTES)
+
+        expires_at = (
+            datetime.now(timezone.utc)
+            + timedelta(minutes=settings.DOWNLOAD_SESSION_EXPIRE_MINUTES)
+        )
 
         download_session = DownloadSession(
             share_id=share.id,
             token_hash=t_hash,
             expires_at=expires_at
         )
+
         db.add(download_session)
         db.commit()
 
@@ -170,26 +232,42 @@ class SharingService:
                 "download_count": share.download_count
             }
         )
+
         return raw_token, file, expires_at
 
     @staticmethod
-    async def get_chunk_for_session(db: Session, raw_token: str, chunk_index: int) -> bytes:
-        t_hash = hash_token(raw_token)
-        now = datetime.now(timezone.utc)
+    async def get_chunk_for_session(
+        db: Session,
+        raw_token: str,
+        chunk_index: int
+    ) -> bytes:
 
+        t_hash = hash_token(raw_token)
+
+        # Fetch by token hash first, then compare timestamps in Python.
         session = db.query(DownloadSession).filter(
-            DownloadSession.token_hash == t_hash,
-            DownloadSession.expires_at > now
+            DownloadSession.token_hash == t_hash
         ).first()
 
         if not session:
             raise ValueError("Invalid or expired download session")
 
-        share = db.query(Share).filter(Share.id == session.share_id).first()
-        if not share or share.status == "REVOKED":
+        now = datetime.now(timezone.utc)
+
+        if ensure_utc(session.expires_at) <= now:
+            raise ValueError("Invalid or expired download session")
+
+        share = db.query(Share).filter(
+            Share.id == session.share_id
+        ).first()
+
+        if not share or share.status in ("REVOKED", "EXPIRED"):
             raise ValueError("Share access is revoked or unavailable")
 
-        file = db.query(EncryptedFile).filter(EncryptedFile.id == share.file_id).first()
+        file = db.query(EncryptedFile).filter(
+            EncryptedFile.id == share.file_id
+        ).first()
+
         if not file:
             raise ValueError("File not found")
 

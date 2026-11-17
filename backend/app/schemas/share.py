@@ -28,6 +28,7 @@ class ShareResponse(BaseModel):
 
 class PublicShareInfo(BaseModel):
     share_id: str
+    file_id: str
     chunk_count: int
     iv_prefix: str
     crypto_version: str
