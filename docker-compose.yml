@@ -1,0 +1,64 @@
+version: "3.8"
+
+services:
+  mariadb:
+    image: mariadb:11.4
+    container_name: secureshare_mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-secureshare_root_secret}
+      MYSQL_DATABASE: ${MARIADB_DATABASE:-secureshare}
+      MYSQL_USER: ${MARIADB_USER:-secureshare_user}
+      MYSQL_PASSWORD: ${MARIADB_PASSWORD:-secureshare_password}
+    ports:
+      - "${MARIADB_PORT:-3306}:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    networks:
+      - secureshare_net
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: secureshare_backend
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://${MARIADB_USER:-secureshare_user}:${MARIADB_PASSWORD:-secureshare_password}@mariadb:3306/${MARIADB_DATABASE:-secureshare}
+      SECRET_KEY: ${SECRET_KEY:-default_insecure_development_secret_key_change_me}
+      STORAGE_DIR: /app/storage
+      ALLOWED_ORIGINS: http://localhost:5173,http://localhost:3000,http://localhost:8080
+    volumes:
+      - ./storage:/app/storage
+    ports:
+      - "8000:8000"
+    networks:
+      - secureshare_net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: secureshare_frontend
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    networks:
+      - secureshare_net
+
+networks:
+  secureshare_net:
+    driver: bridge
+
+volumes:
+  mariadb_data:
